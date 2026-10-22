@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Unsteady</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f0ecff;--ink:#2b1f94;--panel:#ffffff;--line:#cfc6f7;--paper:#fffef9;--soft:#7a6bd6;color-scheme:light dark;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1a1470;--ink:#fff0a3;--panel:#251c8c;--line:#4b40c9;--soft:#b9adff}}
+:root[data-theme="dark"]{--bg:#1a1470;--ink:#fff0a3;--panel:#251c8c;--line:#4b40c9;--soft:#b9adff}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:18px/1.3 "Patrick Hand",cursive,sans-serif;display:flex;flex-direction:column;gap:10px;padding:10px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 16px;padding:0 4px}
+h1{margin:0;font-size:30px;font-weight:400}
+#stage{flex:1;min-height:0;position:relative;border-radius:14px;overflow:hidden;background:var(--paper);border:3px solid var(--line)}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+#live{touch-action:none;cursor:crosshair}
+#intro{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:24px;font-size:clamp(24px,5vw,44px);color:#7a6bd6;pointer-events:none;transition:opacity .7s}
+#intro.gone{opacity:0}
+.bar{background:var(--panel);border:3px solid var(--line);border-radius:14px;padding:10px 12px;display:flex;flex-wrap:wrap;gap:10px 20px;align-items:center;max-height:40vh;overflow:auto}
+.grp{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.tb{font:inherit;color:var(--ink);background:transparent;border:2px solid var(--ink);border-radius:999px;padding:3px 14px;cursor:pointer}
+.tb[aria-pressed="true"]{background:var(--ink);color:var(--panel)}
+.sw{width:30px;height:30px;padding:0;border:3px solid var(--panel);border-radius:50%;background:var(--c);box-shadow:0 0 0 2px var(--line);cursor:pointer}
+.sw[aria-pressed="true"]{background:var(--c);box-shadow:0 0 0 3px var(--ink)}
+button:focus-visible,input:focus-visible{outline:3px solid #ff2fb0;outline-offset:2px}
+label{display:flex;align-items:center;gap:8px}
+input[type=range]{width:96px;accent-color:var(--ink)}
+dialog{background:var(--panel);color:var(--ink);border:3px solid var(--line);border-radius:14px;max-width:92vw;text-align:center;font:inherit}
+dialog img{max-width:80vw;max-height:58vh;border-radius:8px}
+@media (prefers-reduced-motion:reduce){#intro{transition:none}}
+</style>
+</head>
+<body>
+<header>
+<h1>Unsteady</h1>
+</header>
+<div id="stage">
+<canvas id="main"></canvas>
+<canvas id="live" aria-label="Drawing area"></canvas>
+<div id="intro">Draw anything.<br>Let it wobble.</div>
+</div>
+<div class="bar">
+<div class="grp" id="tools" role="group" aria-label="Brush">
+<button class="tb" data-mode="echo" aria-pressed="true" title="One line, with rings that ripple out from it">Ripple</button>
+<button class="tb" data-mode="blob" aria-pressed="false" title="A filled shape with rings around it">Shape</button>
+<button class="tb" data-mode="marker" aria-pressed="false" title="A single marker line">Marker</button>
+</div>
+<div class="grp" id="sw" role="group" aria-label="Color"></div>
+<div class="grp"><button class="tb" id="rain" aria-pressed="true">Rainbow rings</button></div>
+<div class="grp">
+<label>Rings <input type="range" data-k="rings" min="0" max="12" value="6"></label>
+<label>Gap <input type="range" data-k="gap" min="4" max="30" value="8"></label>
+<label>Line <input type="range" data-k="lw" min="3" max="20" value="7"></label>
+<label>Wobble <input type="range" data-k="wob" min="0" max="10" value="5"></label>
+</div>
+<div class="grp">
+<button class="tb" id="undo">Undo</button>
+<button class="tb" id="clear">Start over</button>
+<button class="tb" id="save">Save</button>
+</div>
+</div>
+<dialog id="dlg"><p>Press and hold the picture (or right-click) to save it.</p><img id="out" alt="Your drawing"><p><button class="tb" id="close">Close</button></p></dialog>
+<script>
+const PAL=[["Red","#ff1f2d"],["Pink","#ff2fb0"],["Orange","#ff8a00"],["Yellow","#ffe600"],["Green","#22d13c"],["Teal","#14b4d8"],["Blue","#1428e6"],["Maroon","#a3121e"],["Forest","#0b7d34"]];
+const $=s=>document.querySelector(s);
+const S={mode:'echo',c:0,rain:true,rings:6,gap:8,lw:7,wob:5};
+const strokes=[];
+const stage=$('#stage'),main=$('#main'),live=$('#live'),intro=$('#intro');
+const mctx=main.getContext('2d'),lctx=live.getContext('2d');
+const scratch=document.createElement('canvas'),sctx=scratch.getContext('2d');
+let W=0,H=0,dpr=1,cur=null,raf=0;
+
+const tile=document.createElement('canvas');tile.width=tile.height=220;
+(()=>{const t=tile.getContext('2d');
+for(let i=0;i<900;i++){t.fillStyle='rgba(255,255,255,'+(.25+Math.random()*.6)+')';t.beginPath();t.arc(Math.random()*220,Math.random()*220,.5+Math.random()*.9,0,7);t.fill();}
+t.lineCap='round';
+for(let i=0;i<40;i++){t.strokeStyle='rgba(255,255,255,'+(.15+Math.random()*.3)+')';t.lineWidth=.8;const x=Math.random()*220,y=Math.random()*220,a=Math.random()*6.3;t.beginPath();t.moveTo(x,y);t.lineTo(x+Math.cos(a)*14,y+Math.sin(a)*14);t.stroke();}})();
+const grain=sctx.createPattern(tile,'repeat');
+
+const nz=(x,s)=>Math.sin(x+s)*.5+Math.sin(x*2.3+s*1.7)*.3+Math.sin(x*4.1+s*2.9)*.2;
+
+function prep(pts){
+  let p=pts.map(a=>({x:a.x,y:a.y}));
+  if(p.length<2)p.push({x:p[0].x+.01,y:p[0].y});
+  for(let r=0;r<3;r++){const q=p.slice();for(let i=1;i<p.length-1;i++)q[i]={x:(p[i-1].x+p[i].x+p[i+1].x)/3,y:(p[i-1].y+p[i].y+p[i+1].y)/3};p=q;}
+  let d=0;p.forEach((a,i)=>{if(i)d+=Math.hypot(a.x-p[i-1].x,a.y-p[i-1].y);a.s=d;});
+  return p;
+}
+
+function drawTo(ctx,st){
+  const c=sctx;
+  c.setTransform(1,0,0,1,0,0);c.globalCompositeOperation='source-over';c.clearRect(0,0,scratch.width,scratch.height);
+  c.setTransform(dpr,0,0,dpr,0,0);c.lineCap=c.lineJoin='round';
+  const P=prep(st.pts),blob=st.mode==='blob'&&P.length>2,step=st.lw+st.gap,amp=st.wob*1.2,sd=st.seed;
+  const col=k=>PAL[(st.c+(st.rain?k:0))%9][1];
+  const path=k=>{c.beginPath();for(let i=0;i<P.length;i++){const p=P[i],f=p.s*.02,a=k*13.7+sd;
+    const x=p.x+amp*nz(f,a)+.7*nz(p.s*.35,a+5),y=p.y+amp*nz(f,a+40)+.7*nz(p.s*.35,a+9);
+    i?c.lineTo(x,y):c.moveTo(x,y);}if(blob)c.closePath();};
+  const core=st.mode==='echo'?st.lw*1.7:st.mode==='marker'?st.lw*1.5:0;
+  if(st.mode!=='marker')for(let k=st.rings;k>0;k--){
+    const h=core/2+k*step,b=st.lw*(1+.2*nz(k*2.9,sd));
+    c.globalCompositeOperation='source-over';c.strokeStyle=col(k);c.lineWidth=2*h;path(k);c.stroke();
+    c.globalCompositeOperation='destination-out';c.lineWidth=2*(h-b);path(k);c.stroke();
+  }
+  c.globalCompositeOperation='source-over';c.strokeStyle=c.fillStyle=col(0);
+  if(blob){path(0);c.fill();c.lineWidth=st.lw;c.stroke();}
+  else{c.lineWidth=core||st.lw;path(0);c.stroke();}
+  c.globalCompositeOperation='destination-out';c.fillStyle=grain;
+  const ox=(sd*37)%220,oy=(sd*91)%220;c.translate(ox,oy);c.fillRect(-ox,-oy,W+220,H+220);
+  ctx.setTransform(1,0,0,1,0,0);ctx.globalAlpha=.94;ctx.drawImage(scratch,0,0);ctx.globalAlpha=1;
+}
+
+function replay(){
+  mctx.setTransform(1,0,0,1,0,0);mctx.fillStyle='#fffef9';mctx.fillRect(0,0,main.width,main.height);
+  strokes.forEach(st=>drawTo(mctx,st));
+}
+function size(){
+  const r=stage.getBoundingClientRect();W=r.width;H=r.height;dpr=Math.min(devicePixelRatio||1,2);
+  for(const c of [main,live,scratch]){c.width=Math.round(W*dpr);c.height=Math.round(H*dpr);}
+  replay();
+}
+new ResizeObserver(size).observe(stage);
+
+const pos=e=>{const r=stage.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};};
+function frame(){if(!raf)raf=requestAnimationFrame(()=>{raf=0;if(cur){lctx.setTransform(1,0,0,1,0,0);lctx.clearRect(0,0,live.width,live.height);drawTo(lctx,cur);}});}
+live.addEventListener('pointerdown',e=>{e.preventDefault();live.setPointerCapture(e.pointerId);cur={...S,pts:[pos(e)],seed:Math.random()*1000};intro.classList.add('gone');frame();});
+live.addEventListener('pointermove',e=>{
+  if(!cur)return;
+  for(const ev of (e.getCoalescedEvents?e.getCoalescedEvents():[e])){const p=pos(ev),l=cur.pts[cur.pts.length-1];if(Math.hypot(p.x-l.x,p.y-l.y)>3)cur.pts.push(p);}
+  frame();
+});
+function end(){
+  if(!cur)return;const st=cur;cur=null;strokes.push(st);
+  lctx.setTransform(1,0,0,1,0,0);lctx.clearRect(0,0,live.width,live.height);
+  drawTo(mctx,st);
+}
+live.addEventListener('pointerup',end);live.addEventListener('pointercancel',end);
+
+// controls
+const swBox=$('#sw');
+PAL.forEach(([n,c],i)=>{const b=document.createElement('button');b.className='sw';b.style.setProperty('--c',c);b.setAttribute('aria-label',n);b.setAttribute('aria-pressed',i===0);
+  b.onclick=()=>{S.c=i;[...swBox.children].forEach((x,j)=>x.setAttribute('aria-pressed',j===i));};swBox.appendChild(b);});
+document.querySelectorAll('#tools button').forEach(b=>b.onclick=()=>{S.mode=b.dataset.mode;document.querySelectorAll('#tools button').forEach(x=>x.setAttribute('aria-pressed',x===b));});
+$('#rain').onclick=e=>{S.rain=!S.rain;e.currentTarget.setAttribute('aria-pressed',S.rain);e.currentTarget.textContent=S.rain?'Rainbow rings':'One color';};
+document.querySelectorAll('input[data-k]').forEach(i=>i.oninput=()=>S[i.dataset.k]=+i.value);
+const undo=()=>{strokes.pop();replay();};
+$('#undo').onclick=undo;
+$('#clear').onclick=()=>{strokes.length=0;replay();intro.classList.remove('gone');};
+addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&!e.shiftKey&&!e.altKey&&(e.code==='KeyZ'||(e.key||'').toLowerCase()==='z')){e.preventDefault();undo();}});
+$('#save').onclick=()=>{$('#out').src=main.toDataURL('image/png');$('#dlg').showModal();};
+$('#close').onclick=()=>$('#dlg').close();
+</script>
+</body>
+</html>
